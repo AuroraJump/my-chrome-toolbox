@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.2.4";
+  const VERSION = "2.2.5";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -164,12 +164,13 @@
     return arr.map(ev => {
       const date = ev.id || "";
       const wt = (ev.worktime || "").replace(/<br>/g, " ").replace(/<[^>]+>/g, "");
-      const m = wt.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*-\s*(\d{1,2}):(\d{2})(?::\d{2})?/);
+      // v2.2.5: split 后两侧各自匹配, 支持"只打上班没打下班"
+      const parts = wt.split(/\s*-\s*/);
+      const startMatch = parts[0] && parts[0].match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+      const endMatch   = parts[1] && parts[1].match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
       let start = null, end = null;
-      if (m) {
-        start = `${m[1].padStart(2, "0")}:${m[2]}`;
-        end   = `${m[3].padStart(2, "0")}:${m[4]}`;
-      }
+      if (startMatch) start = `${startMatch[1].padStart(2, "0")}:${startMatch[2]}`;
+      if (endMatch)   end   = `${endMatch[1].padStart(2, "0")}:${endMatch[2]}`;
       let note = null;
       if (start && end && start === end) { note = "旷工"; end = null; }
       else if (ev.holidayname && ev.holidayname.indexOf("法定") >= 0) note = "法定节假日";
@@ -247,14 +248,17 @@
       }
 
       // 解析 "HH:MM - HH:MM" 或 "HH:MM:SS - HH:MM:SS" (soa.com.cn 格式)
-      // (?::\d{2})? 允许可选的秒数, 避免贪婪匹配到 MM:SS
-      // v2.2.2 修复: soa.com.cn 页面用的是 HH:MM:SS, 老正则会跳到 MM:SS
-      const m = text.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*-\s*(\d{1,2}):(\d{2})(?::\d{2})?/);
+// 也支持只有一边的情况 (如 "08:02:14 - " 只打了上班卡)
+// (?::\d{2})? 允许可选的秒数, 避免贪婪匹配到 MM:SS
+// v2.2.5 修复: 老正则要求两边都匹配, "只打上班没打下班" 时整条不匹配 → start=null
+//   → buildReminder 误判"没上班", 提醒不显示
+//   改成 split 后两侧各自匹配, 一边有就解析一边
+      const parts = text.split(/\s*-\s*/);
+      const startMatch = parts[0] && parts[0].match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
+      const endMatch   = parts[1] && parts[1].match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
       let start = null, end = null;
-      if (m) {
-        start = `${m[1].padStart(2, "0")}:${m[2]}`;
-        end   = `${m[3].padStart(2, "0")}:${m[4]}`;
-      }
+      if (startMatch) start = `${startMatch[1].padStart(2, "0")}:${startMatch[2]}`;
+      if (endMatch)   end   = `${endMatch[1].padStart(2, "0")}:${endMatch[2]}`;
 
       // 判定
       let note = null;
