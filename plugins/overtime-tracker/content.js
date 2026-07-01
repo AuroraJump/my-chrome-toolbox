@@ -16,15 +16,17 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.2.2";
+  const VERSION = "2.2.3";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
   // 必须自己过滤,否则在百度/掘金/任何网站都会蹦出红色 OT 标签
-  // v2.2.1: 写死两个考勤域 (新增 soa.com.cn, 保留 aciic.cn)
+  // v2.2.3: 加 path 前缀, 避免同域名其他页面也蹦出面板
+  //   允许: oa.aciic.cn/hr/... 和 soa.com.cn/oaataticsv/attendance/...
+  //   拒绝: oa.aciic.cn/home/... 等同域名其他路径
   const HOST_OK =
-    location.hostname === "soa.com.cn" ||
-    location.hostname === "oa.aciic.cn" ||
+    (location.hostname === "oa.aciic.cn" && location.pathname.startsWith("/hr/")) ||
+    (location.hostname === "soa.com.cn" && location.pathname.startsWith("/oaataticsv/attendance")) ||
     location.hostname === "localhost" ||
     location.hostname === "127.0.0.1" ||
     location.hostname.startsWith("172.");
