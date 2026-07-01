@@ -84,6 +84,11 @@
   border-left: 3px solid #3b82f6;
   color: #1e40af;
 }
+.ot-reminder-normal {
+  background: linear-gradient(135deg, #f9fafb 0%, #f3f4f6 100%);
+  border-left: 3px solid #9ca3af;
+  color: #4b5563;
+}
 @keyframes ot-pulse-red {
   0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); }
   50% { box-shadow: 0 0 0 5px rgba(220, 38, 38, 0); }

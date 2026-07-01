@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.2.3";
+  const VERSION = "2.2.4";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -473,11 +473,14 @@
     } else if (delay > 0) {
       // 已到下班时间, 警告:黄色
       return `<div class="ot-reminder ot-reminder-warning">⏰ 你 ${startStr} 上班, 已到下班时间(${minToTime(standardEndMin)}), 记得打卡!</div>`;
-    } else if (delay > -30) {
-      // 距离下班 30min 内, 提示:蓝色
+    } else if (delay > -60) {
+      // 距离下班 1h 内, 提示:蓝色
       return `<div class="ot-reminder ot-reminder-info">⏰ 你 ${startStr} 上班, 还有 ${Math.abs(delay)} 分钟下班</div>`;
+    } else {
+      // 距离下班 > 1h, 灰色: 提醒已上班 + 还有多久下班
+      const remainMin = standardEndMin - nowMin;
+      return `<div class="ot-reminder ot-reminder-normal">📍 你 ${startStr} 上班, 已工作 ${elapsedStr}, 还有 ${minToStr(remainMin)} 到下班时间</div>`;
     }
-    return "";
   }
 
   // ============ 渲染 ============
@@ -548,9 +551,13 @@
     // 检查是否真的解析到了打卡
     const withPunch = days.filter(d => d.start && d.end);
     if (withPunch.length === 0 && days.length > 0) {
+      // v2.2.4 修复: 即使没有完整打卡也要先尝试显示下班提醒
+      // 场景: 今天只打了上班卡, 没打下班卡 → 应当提醒"该打卡下班了"
+      const reminderHtml = buildReminder(days, RULES);
       body.innerHTML = `
-        <div class="ot-empty">⚠️ 找到 ${days.length} 个日历格,但没有打卡</div>
-        <div class="ot-empty" style="font-size:11px">可能是节假日月份或空数据</div>
+        ${reminderHtml}
+        <div class="ot-empty">⚠️ 找到 ${days.length} 个日历格,但没有完整打卡</div>
+        <div class="ot-empty" style="font-size:11px">可能是月初、节假日月份或空数据</div>
       `;
       detail.innerHTML = "";
       footer.textContent = "数据为空";
