@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h3>⚙️ 加班规则配置</h3>
+
+  <div class="field">
+    <label>排班模式</label>
+    <select id="scheduleMode">
+      <option value="elastic">弹性 (按总工时算)</option>
+      <option value="fixed">固定时间 (如早9晚6)</option>
+    </select>
+    <small id="modeHint">加班 = 实际工时 − 目标工时</small>
+  </div>
+
+  <div class="field" id="fixedFields">
+    <label>上班时间 / 下班时间</label>
+    <div class="time-row">
+      <input type="time" id="workStartTime" value="09:00">
+      <span>→</span>
+      <input type="time" id="workEndTime" value="18:00">
+    </div>
+    <small>每日工时: <b id="dailyHoursDisplay">9h</b></small>
+  </div>
+
+  <div class="field" id="elasticFields" style="display:none">
+    <label>每日目标工时(小时)</label>
+    <input type="number" id="baseHours" min="0" max="24" step="0.5" value="9">
+    <small>实际工时 − 目标工时 = 加班</small>
+  </div>
+
+  <div class="field">
+    <label>加班门槛(小时, 工作日)</label>
+    <input type="number" id="thresholdHours" min="0" max="12" step="0.5" value="2">
+    <small>延后超过此值才算加班, 否则 0</small>
+  </div>
+
+  <hr class="thin">
+
+  <div class="field">
+    <label>🚕 交通补贴开始时间 (工作日)</label>
+    <input type="time" id="subsidyStartTime" value="21:00">
+    <small>工作日: 实际下班 ≥ 此时间, 记 1 次</small>
+  </div>
+
+  <hr class="thin">
+
+  <div class="field-title">📅 周末/节假日规则 (只看时间, 不分弹性)</div>
+
+  <div class="field">
+    <label>起步阈值(小时)</label>
+    <input type="number" id="weekendThreshold" min="0" max="12" step="0.5" value="4">
+    <small>工时超过此值才计入加班</small>
+  </div>
+
+  <div class="field">
+    <label>单日封顶(小时)</label>
+    <input type="number" id="weekendMax" min="0" max="24" step="0.5" value="8">
+    <small>一天最多算这么多加班</small>
+  </div>
+
+  <hr class="thin">
+
+  <div class="field">
+    <label>月度目标(小时)</label>
+    <input type="number" id="targetHours" min="0" max="200" step="1" value="48">
+    <small>用于百分比显示</small>
+  </div>
+
+  <div class="field">
+    <label>计算模式</label>
+    <select id="ruleMode">
+      <option value="user">按我的规则计算(推荐)</option>
+      <option value="raw">信任页面 Stzbzsc</option>
+    </select>
+  </div>
+
+  <div class="actions">
+    <button id="save">💾 保存</button>
+    <button id="reset">↺ 恢复默认</button>
+  </div>
+
+  <div id="status"></div>
+
+  <p class="hint">
+    <b>固定工作日</b>: 加班 = 实际下班 − 18:00 (无门槛)<br>
+    <b>弹性工作日</b>: 加班 = 实际工时 − 目标工时 − 门槛<br>
+    <b>周末/节假日</b>: 加班 = min(8h, 工时 − 4h 阈值)<br>
+    <b>交通补贴</b>:
+    &nbsp;工作日 ≥ 21:00 → 1 次/天;
+    &nbsp;周末/节假日工时 > 4h → 1 次, > 9h → 2 次<br>
+    法定节假日/调休/年假/病假等 → 加班 = 0
+  </p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
