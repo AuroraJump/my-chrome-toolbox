@@ -3,9 +3,7 @@
 ## 安装
 1. `chrome://extensions/` 打开开发者模式
 2. 加载已解压 → 选本目录
-3. 打开以下任一考勤页:
-   - `https://oa.aciic.cn/hr/HGWebCalen.nsf/index.html?open`
-   - `https://soa.com.cn/oaataticsv/attendance/index.html`
+3. 打开考勤页
 
 ## 加班规则(可在插件图标点开调整)
 
