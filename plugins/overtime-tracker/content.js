@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.3.1";
+  const VERSION = "2.3.2";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -91,6 +91,9 @@
   }
 
   let RULES = { ...DEFAULT_RULES };
+
+  // 多月统计的渲染缓存, 防止 render() 把抓取中/抓取结果给冲掉
+  let aggregateCache = "";
 
   // 从 chrome.storage 加载规则
   function loadRules() {
@@ -456,18 +459,61 @@
     };
   }
 
-  function findPrevMonthButton() {
-    // 常见模式: button/a/input 的 text 是 "<" / "Prev" / "<< Prev"
+  function findNavButton(direction) {
+    // direction: "prev" 或 "next"
+    // 多种匹配模式, 提高命中率
     const candidates = document.querySelectorAll(
       'button, a, input[type="button"], input[type="submit"]'
     );
+    const exactPatterns = direction === "prev"
+      ? ["<", "Prev", "<< Prev", "<<", "上月", "< 上月", "Previous", "上个月", "Previous Month"]
+      : [">", "Next", "Next >>", ">>", "下月", "Next>", "下个月", "Next Month"];
     for (const el of candidates) {
       const text = (el.textContent || el.value || "").trim();
-      if (text === "<" || text === "Prev" || text === "<< Prev" || text === "<<") {
-        return el;
-      }
+      if (exactPatterns.includes(text)) return el;
+    }
+    // 部分匹配兜底 (regex)
+    const partialRegex = direction === "prev"
+      ? /^(Prev|prev|Previous|previous|上月|上个月)/
+      : /^(Next|next|下月|下个月)/;
+    for (const el of candidates) {
+      const text = (el.textContent || el.value || "").trim();
+      if (partialRegex.test(text)) return el;
     }
     return null;
+  }
+
+  function findPrevMonthButton() {
+    return findNavButton("prev");
+  }
+
+  function findNextMonthButton() {
+    return findNavButton("next");
+  }
+
+  // 翻到指定年月 (基于当前页, 算差值决定点击 Next 还是 Prev)
+  async function navigateToMonth(targetYM) {
+    let currentYM = getCurrentPageYearMonth();
+    if (!currentYM || !targetYM) return false;
+    const currentIdx = currentYM.year * 12 + currentYM.month;
+    const targetIdx = targetYM.year * 12 + targetYM.month;
+    let diff = currentIdx - targetIdx;
+    if (diff === 0) return true;
+
+    const direction = diff > 0 ? "next" : "prev";
+    const clicks = Math.abs(diff);
+    console.log(`[OT] 翻月回去: ${clicks} 次 ${direction} (${currentYM.year}-${currentYM.month} → ${targetYM.year}-${targetYM.month})`);
+
+    for (let i = 0; i < clicks; i++) {
+      const btn = direction === "next" ? findNextMonthButton() : findPrevMonthButton();
+      if (!btn) {
+        console.warn(`[OT] 找不到 ${direction} 按钮, 中断翻月`);
+        return false;
+      }
+      btn.click();
+      await waitForCalendarUpdate();
+    }
+    return true;
   }
 
   // 等待日历 DOM 更新 (MutationObserver) 或兜底 2s 超时
@@ -576,17 +622,26 @@
       return;
     }
 
+    // 记下起始年月, 抓完要跳回去
+    const startYM = getCurrentPageYearMonth();
+
     btn.disabled = true;
     const oldText = btn.textContent;
     btn.textContent = "⏳ 抓取中...";
-    resultEl.innerHTML = `⏳ 抓取中... (0/${months})`;
+
+    const setProgress = (html) => {
+      resultEl.innerHTML = html;
+      // 同步缓存, render() 触发时不会被冲掉
+      aggregateCache = html;
+    };
+    setProgress(`⏳ 抓取中... (0/${months})`);
 
     try {
       const monthly = await fetchHistoricalMonths(months, (cur, total, ym) => {
-        resultEl.innerHTML = `⏳ 抓取中... (${cur}/${total}) · ${ym.year}-${String(ym.month).padStart(2, "0")}`;
+        setProgress(`⏳ 抓取中... (${cur}/${total}) · ${ym.year}-${String(ym.month).padStart(2, "0")}`);
       });
       if (monthly.length === 0) {
-        resultEl.innerHTML = `❌ 没找到 Prev 按钮或 Year/Month input, 无法翻月`;
+        setProgress(`❌ 没找到 Prev 按钮或 Year/Month input, 无法翻月 (面板会回到当月)`);
         btn.disabled = false;
         btn.textContent = oldText;
         return;
@@ -606,19 +661,32 @@
       }
       monthlyHtml += `</div>`;
 
-      resultEl.innerHTML = `
+      setProgress(`
         <div class="ot-aggregate-stats">
           <div class="ot-row"><span class="ot-label">📊 近 ${agg.monthCount} 月累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
           <div class="ot-row"><span class="ot-label">📊 月均加班</span><span class="ot-value">${hoursToStr(agg.avgHours)}</span></div>
           <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 本月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
           ${monthlyHtml}
         </div>
-      `;
+      `);
+
+      // 翻月回到起始月 (注意: 此时页面已在历史月份上, 需要用 Next 反向回来)
+      if (startYM) {
+        setProgress(aggregateCache + `<div style="margin-top:4px;color:#9ca3af">⏳ 翻回当月 ${startYM.year}-${String(startYM.month).padStart(2, "0")}...</div>`);
+        const ok = await navigateToMonth(startYM);
+        if (ok) {
+          setProgress(aggregateCache.replace(/<div style="margin-top:4px;color:#9ca3af">.*?<\/div>/s, ""));
+          render();  // 用当月数据重新渲染主面板
+        } else {
+          setProgress(aggregateCache.replace(/<div style="margin-top:4px;color:#9ca3af">.*?<\/div>/s, "")
+            + `<div style="margin-top:4px;color:#dc2626">⚠️ 翻回当月失败, 请手动点 "Today" 回到当月</div>`);
+        }
+      }
       btn.disabled = false;
       btn.textContent = "🔄 重新加载";
     } catch (e) {
       console.error("[OT] aggregate error:", e);
-      resultEl.innerHTML = `❌ 出错: ${e.message || e}`;
+      setProgress(`❌ 出错: ${e.message || e}`);
       btn.disabled = false;
       btn.textContent = oldText;
     }
@@ -881,6 +949,13 @@
       detailHtml += `<div class="ot-empty">原始模式:未计算每日明细</div>`;
     }
     detail.innerHTML = detailHtml;
+
+    // v2.3.2 修复: 抓取中或抓取结果被 render() 覆盖的问题
+    // 缓存 aggregate 状态, render 之后恢复
+    if (typeof aggregateCache !== "undefined" && aggregateCache) {
+      const resultEl = panel.querySelector("[data-result]");
+      if (resultEl) resultEl.innerHTML = aggregateCache;
+    }
 
     const now = new Date();
     footer.textContent = `v${VERSION} · 更新于 ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} · ${RULES.ruleMode === "raw" ? "原始" : "自定义规则"}`;
