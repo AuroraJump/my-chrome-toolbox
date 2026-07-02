@@ -59,6 +59,31 @@
   border-top: 1px dashed #e5e7eb;
   margin-top: 6px;
 }
+.ot-aggregate-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ot-aggregate-controls select {
+  flex: 1;
+  padding: 5px 6px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #fff;
+  color: #1f2937;
+}
+.ot-aggregate-controls select:focus {
+  outline: none;
+  border-color: #2751c8;
+  box-shadow: 0 0 0 2px rgba(39,81,200,0.15);
+}
+.ot-aggregate-controls .ot-btn-secondary {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 5px 10px;
+  font-size: 12px;
+}
 .ot-btn-secondary {
   width: 100%;
   padding: 6px 8px;

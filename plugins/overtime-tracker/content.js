@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.3.0";
+  const VERSION = "2.3.1";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -561,6 +561,69 @@
     };
   }
 
+  // 多月统计点击处理 (从 panel 事件委托里调用)
+  async function handleAggregateClick(btn) {
+    const panel = btn.closest("#overtime-tracker-panel");
+    if (!panel) return;
+    const resultEl = panel.querySelector("[data-result]");
+    if (!resultEl) return;
+
+    // 用 select 当前值, 不读 RULES (select 改了还没持久化时, RULES 还没更新)
+    const sel = panel.querySelector("[data-aggregate-months]");
+    const months = sel ? parseInt(sel.value, 10) : (RULES.aggregateMonths || 12);
+    if (!months || months < 1) {
+      resultEl.innerHTML = "❌ 月数无效";
+      return;
+    }
+
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = "⏳ 抓取中...";
+    resultEl.innerHTML = `⏳ 抓取中... (0/${months})`;
+
+    try {
+      const monthly = await fetchHistoricalMonths(months, (cur, total, ym) => {
+        resultEl.innerHTML = `⏳ 抓取中... (${cur}/${total}) · ${ym.year}-${String(ym.month).padStart(2, "0")}`;
+      });
+      if (monthly.length === 0) {
+        resultEl.innerHTML = `❌ 没找到 Prev 按钮或 Year/Month input, 无法翻月`;
+        btn.disabled = false;
+        btn.textContent = oldText;
+        return;
+      }
+      const agg = computeAggregate(monthly);
+      const thisMonth = monthly[0];
+      const diffMin = thisMonth.totalMin - agg.avgMin;
+      const diffCls = diffMin >= 0 ? "ot-good" : "ot-warn";
+      const diffSign = diffMin >= 0 ? "+" : "";
+      const trend = diffMin >= 0 ? "📈" : "📉";
+
+      // 月度明细 (倒序, 最新在最上面)
+      let monthlyHtml = `<div class="ot-monthly-list">`;
+      for (let i = monthly.length - 1; i >= 0; i--) {
+        const m = monthly[i];
+        monthlyHtml += `<div class="ot-monthly-row"><span>${m.year}-${String(m.month).padStart(2, "0")}</span><span>${hoursToStr(m.totalHours)}</span><span>${m.overtimeDays}天</span><span>🚕×${m.totalSubsidyCount}</span></div>`;
+      }
+      monthlyHtml += `</div>`;
+
+      resultEl.innerHTML = `
+        <div class="ot-aggregate-stats">
+          <div class="ot-row"><span class="ot-label">📊 近 ${agg.monthCount} 月累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
+          <div class="ot-row"><span class="ot-label">📊 月均加班</span><span class="ot-value">${hoursToStr(agg.avgHours)}</span></div>
+          <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 本月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
+          ${monthlyHtml}
+        </div>
+      `;
+      btn.disabled = false;
+      btn.textContent = "🔄 重新加载";
+    } catch (e) {
+      console.error("[OT] aggregate error:", e);
+      resultEl.innerHTML = `❌ 出错: ${e.message || e}`;
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+
   // ============ 打卡提醒 ============
   // 检测今天:有上班打卡 + 没下班打卡 → 该提醒了
   function buildReminder(days, rules) {
@@ -629,65 +692,46 @@
     `;
     document.body.appendChild(panel);
 
-    panel.querySelector('[data-action="refresh"]').addEventListener("click", render);
-    panel.querySelector('[data-action="toggle"]').addEventListener("click", () => {
-      panel.classList.toggle("collapsed");
-      const detailVisible = panel.querySelector("[data-detail]").style.display !== "none";
-      panel.querySelector('[data-action="toggle"]').textContent =
-        panel.classList.contains("collapsed") ? "+" : (detailVisible ? "−" : "−");
+    // ===== 事件委托: 监听整个 panel, 根据 data-action 分发 =====
+    // 原因: aggregate 按钮在 body.innerHTML 里, render() 会重建它
+    //       直接挂监听会丢, 委托到 panel 上就没这个问题
+    panel.addEventListener("click", (e) => {
+      const target = e.target.closest("[data-action]");
+      if (!target || !panel.contains(target)) return;
+      const action = target.dataset.action;
+      if (action === "refresh") {
+        render();
+      } else if (action === "toggle") {
+        panel.classList.toggle("collapsed");
+        const detailVisible = panel.querySelector("[data-detail]").style.display !== "none";
+        target.textContent =
+          panel.classList.contains("collapsed") ? "+" : (detailVisible ? "−" : "−");
+      } else if (action === "expand") {
+        const d = panel.querySelector("[data-detail]");
+        const showing = d.style.display !== "none";
+        d.style.display = showing ? "none" : "block";
+        target.textContent = showing ? "▾" : "▴";
+      } else if (action === "aggregate") {
+        handleAggregateClick(target);
+      }
     });
-    panel.querySelector('[data-action="expand"]').addEventListener("click", () => {
-      const d = panel.querySelector("[data-detail]");
-      const showing = d.style.display !== "none";
-      d.style.display = showing ? "none" : "block";
-      panel.querySelector('[data-action="expand"]').textContent = showing ? "▾" : "▴";
-    });
-    const aggBtn = panel.querySelector('[data-action="aggregate"]');
-    if (aggBtn) {
-      aggBtn.addEventListener("click", async () => {
-        const resultEl = panel.querySelector("[data-result]");
-        aggBtn.disabled = true;
-        resultEl.innerHTML = `⏳ 抓取中... (0/${RULES.aggregateMonths})`;
-        try {
-          const monthly = await fetchHistoricalMonths(RULES.aggregateMonths, (cur, total, ym) => {
-            resultEl.innerHTML = `⏳ 抓取中... (${cur}/${total}) · ${ym.year}-${String(ym.month).padStart(2, "0")}`;
-          });
-          if (monthly.length === 0) {
-            resultEl.innerHTML = `❌ 没找到 Prev 按钮或 Year/Month input, 无法翻月`;
-            aggBtn.disabled = false;
-            return;
-          }
-          const agg = computeAggregate(monthly);
-          // 跟本月对比
-          const thisMonth = monthly[0];
-          const diffMin = thisMonth.totalMin - agg.avgMin;
-          const diffCls = diffMin >= 0 ? "ot-good" : "ot-warn";
-          const diffSign = diffMin >= 0 ? "+" : "";
-          const trend = diffMin >= 0 ? "📈" : "📉";
-          // 月度明细 (倒序)
-          let monthlyHtml = `<div class="ot-monthly-list">`;
-          for (let i = monthly.length - 1; i >= 0; i--) {
-            const m = monthly[i];
-            monthlyHtml += `<div class="ot-monthly-row"><span>${m.year}-${String(m.month).padStart(2, "0")}</span><span>${hoursToStr(m.totalHours)}</span><span>${m.overtimeDays}天</span><span>🚕×${m.totalSubsidyCount}</span></div>`;
-          }
-          monthlyHtml += `</div>`;
-          resultEl.innerHTML = `
-            <div class="ot-aggregate-stats">
-              <div class="ot-row"><span class="ot-label">📊 近 ${agg.monthCount} 月累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
-              <div class="ot-row"><span class="ot-label">📊 月均加班</span><span class="ot-value">${hoursToStr(agg.avgHours)}</span></div>
-              <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 本月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
-              ${monthlyHtml}
-            </div>
-          `;
-          aggBtn.disabled = false;
-          aggBtn.textContent = "🔄 重新加载";
-        } catch (e) {
-          console.error("[OT] aggregate error:", e);
-          resultEl.innerHTML = `❌ 出错: ${e.message || e}`;
-          aggBtn.disabled = false;
+
+    // select 改月数时实时保存
+    panel.addEventListener("change", (e) => {
+      if (e.target.matches("[data-aggregate-months]")) {
+        const n = parseInt(e.target.value, 10);
+        if (!isNaN(n) && n >= 1 && n <= 12) {
+          RULES = { ...RULES, aggregateMonths: n };
+          try {
+            chrome.storage.sync.set({ aggregateMonths: n });
+          } catch (_) {}
+          // 顺手更新按钮文案
+          const btn = panel.querySelector("[data-action=\"aggregate\"]");
+          if (btn) btn.textContent = `📊 加载近 ${n} 月统计`;
         }
-      });
-    }
+      }
+    });
+    // aggregate 按钮的点击处理委托到 panel 上 (见 ensurePanel 里的 panel.addEventListener)
 
     makeDraggable(panel);
     return panel;
@@ -798,10 +842,16 @@
             : `弹性 ${RULES.baseHours}h`
         } · 阈值 ${RULES.thresholdHours}h · 目标 ${RULES.targetHours}h${totalSubsidyCount > 0 ? ` · 补贴≥${RULES.subsidyStartTime}` : ""}</span>
       </div>
-      <div class="ot-aggregate" id="ot-aggregate">
-        <button class="ot-btn-secondary" data-action="aggregate">
-          📊 加载近 ${RULES.aggregateMonths} 月统计
-        </button>
+      <div class="ot-aggregate">
+        <div class="ot-aggregate-controls">
+          <select data-aggregate-months>
+            <option value="1"${RULES.aggregateMonths === 1 ? " selected" : ""}>本月</option>
+            <option value="3"${RULES.aggregateMonths === 3 ? " selected" : ""}>近 3 月</option>
+            <option value="6"${RULES.aggregateMonths === 6 ? " selected" : ""}>近 6 月</option>
+            <option value="12"${RULES.aggregateMonths === 12 ? " selected" : ""}>近 12 月</option>
+          </select>
+          <button class="ot-btn-secondary" data-action="aggregate">📊 加载</button>
+        </div>
         <div class="ot-aggregate-result" data-result></div>
       </div>
     `;
