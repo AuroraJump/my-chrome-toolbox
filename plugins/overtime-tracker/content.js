@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.3.3";
+  const VERSION = "2.3.5";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -75,9 +75,6 @@
 
     // 交通补贴(仅固定模式工作日)
     subsidyStartTime: "21:00",  // 超过这个时间的部分算补贴时段
-
-    // 多月统计
-    aggregateMonths: 12,  // 默认近一年
   };
 
   // 计算某天的"标准下班时间"(分钟)
@@ -449,7 +446,100 @@
 
   // ============ 多月统计 ============
   // 通过点 Prev 按钮 + DOM 监听, 翻历史月份拿数据
+
+  // ===== YM 工具函数 =====
+  function formatYM(ym) {
+    return `${ym.year}-${String(ym.month).padStart(2, "0")}`;
+  }
+  function parseMonthInput(value) {
+    if (!value) return null;
+    const m = String(value).match(/^(\d{4})-(\d{1,2})$/);
+    if (!m) return null;
+    const year = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10);
+    if (year < 2000 || year > 2100 || month < 1 || month > 12) return null;
+    return { year, month };
+  }
+  function getCurrentMonthYM() {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() + 1 };
+  }
+  function addMonths(ym, delta) {
+    const total = ym.year * 12 + (ym.month - 1) + delta;
+    return { year: Math.floor(total / 12), month: (total % 12) + 1 };
+  }
+  function prevYM(ym) {
+    return addMonths(ym, -1);
+  }
+  function compareYM(a, b) {
+    if (a.year !== b.year) return a.year - b.year;
+    return a.month - b.month;
+  }
+  function monthsBetweenInclusive(startYM, endYM) {
+    return (endYM.year - startYM.year) * 12 + (endYM.month - startYM.month) + 1;
+  }
+
+  // 从日历标题文本里解析当前年月, 例: "2026 年 7 月" / "2026-7" / "2026/07"
+  // 比 #Year/#Month input 更可靠 —— 实测发现 input 可能滞后显示 1 个月
+  // (可能是日期区间 start, 或者 input 跟 calendar 不在同一个 render 周期)
+  // 各页面标题位置不一样:
+  //   - oa.aciic.cn: <div id="mh3">2026 年 7 月</div>
+  //   - soa.com.cn:  <h3>2026 年 7 月</h3>  (可能跟 #calendar 是兄弟节点)
+  function parseYMText(text) {
+    if (!text) return null;
+    const t = text.trim();
+    if (!t || t.length > 50) return null;
+    const m = t.match(/(\d{4})\s*年\s*(\d{1,2})\s*月/) ||
+              t.match(/(\d{4})[-\/](\d{1,2})(?!\d)/);
+    if (!m) return null;
+    const year = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10);
+    if (year < 2000 || year > 2100 || month < 1 || month > 12) return null;
+    return { year, month };
+  }
+
+  function findYMInRoot(root) {
+    if (!root) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const ym = parseYMText(node.nodeValue);
+      if (ym) return ym;
+    }
+    return null;
+  }
+
+  function findCalendarTitleYM() {
+    // 策略 A: 直查已知 id (oa.aciic.cn 的 #mh3), 最快最准
+    const mh3 = document.getElementById("mh3");
+    if (mh3) {
+      const ym = parseYMText(mh3.textContent);
+      if (ym) return ym;
+    }
+    // 策略 B: 从 #calendar 往上找 5 层祖先, 覆盖标题是兄弟节点的情况 (soa.com.cn 的 h3 等)
+    const calendar = document.getElementById("calendar");
+    if (calendar) {
+      let root = calendar.parentElement;
+      for (let i = 0; i < 5 && root; i++) {
+        const ym = findYMInRoot(root);
+        if (ym) return ym;
+        root = root.parentElement;
+      }
+    }
+    // 策略 C: 全页面搜所有 h1-h6 标题 (兜底, 标题在 #calendar 完全不同的分支时用)
+    const headings = document.querySelectorAll("h1, h2, h3, h4, h5, h6");
+    for (const h of headings) {
+      const ym = parseYMText(h.textContent);
+      if (ym) return ym;
+    }
+    return null;
+  }
+
   function getCurrentPageYearMonth() {
+    // 策略 1: 日历标题文本 (跟显示同步, 首选)
+    const titleYM = findCalendarTitleYM();
+    if (titleYM) return titleYM;
+    // 策略 2: #Year / #Month input (兜底, 已知可能有 1 个月滞后)
     const yEl = document.getElementById("Year");
     const mEl = document.getElementById("Month");
     if (!yEl || !mEl) return null;
@@ -503,7 +593,8 @@
     if (diff === 0) return true;
 
     // 安全检查: 差值过大就中止, 防止点击命中错按钮导致跑飞
-    if (Math.abs(diff) > 24) {
+    // v2.3.4: 从 24 提到 60, 支持用户跨 5 年范围统计
+    if (Math.abs(diff) > 60) {
       console.warn(`[OT] 翻月差值过大 (${diff} 月), 中止. 当前: ${currentYM.year}-${currentYM.month}, 目标: ${targetYM.year}-${targetYM.month}`);
       return false;
     }
@@ -567,19 +658,20 @@
     });
   }
 
-  // 抓取近 N 个月的数据 (含本月)
-  // 返回 [{ year, month, days, ot }, ...]
-  async function fetchHistoricalMonths(count, onProgress) {
+  // 抓取指定范围 [startYM, endYM] 的数据 (含两端), 当前页面必须已是 endYM
+  // 顺序: 从 endYM 往回抓到 startYM (依次点 Prev)
+  // 返回 [{ year, month, days, ot }, ...] (按时间从早到晚排列)
+  async function fetchHistoricalMonths(startYM, endYM, onProgress) {
     const result = [];
-    // 当前页 = 第 1 个月
-    let ym = getCurrentPageYearMonth();
-    if (!ym) {
-      console.warn("[OT] 找不到 Year/Month input, 无法抓历史");
+    if (compareYM(startYM, endYM) > 0) {
+      console.warn("[OT] startYM 晚于 endYM, 抓取中止");
       return result;
     }
+    const total = monthsBetweenInclusive(startYM, endYM);
 
-    for (let i = 0; i < count; i++) {
-      // 读当前页面数据
+    // 用计算值, 不重读 input (实测 input 滞后 1 个月)
+    let ym = endYM;
+    for (let i = 0; i < total; i++) {
       const days = readDailyPunches();
       const r = computeUserRule(days, RULES);
       result.push({
@@ -591,10 +683,9 @@
         overtimeDays: r.overtimeDays,
         totalSubsidyCount: r.totalSubsidyCount,
       });
-      onProgress && onProgress(i + 1, count, ym);
+      onProgress && onProgress(i + 1, total, ym);
 
-      // 还有下个月要翻
-      if (i < count - 1) {
+      if (i < total - 1) {
         const prevBtn = findPrevMonthButton();
         if (!prevBtn) {
           console.warn("[OT] 找不到 Prev 按钮, 中断抓取");
@@ -602,8 +693,7 @@
         }
         prevBtn.click();
         await waitForCalendarUpdate();
-        ym = getCurrentPageYearMonth();
-        if (!ym) break;
+        ym = prevYM(ym);
       }
     }
     return result;
@@ -642,82 +732,111 @@
     const resultEl = panel.querySelector("[data-result]");
     if (!resultEl) return;
 
-    // 用 select 当前值, 不读 RULES (select 改了还没持久化时, RULES 还没更新)
-    const sel = panel.querySelector("[data-aggregate-months]");
-    const months = sel ? parseInt(sel.value, 10) : (RULES.aggregateMonths || 12);
-    if (!months || months < 1) {
-      resultEl.innerHTML = "❌ 月数无效";
+    // 从输入读范围
+    const startInput = panel.querySelector("[data-aggregate-start]");
+    const endInput = panel.querySelector("[data-aggregate-end]");
+    const startYM = parseMonthInput(startInput && startInput.value);
+    const endYM = parseMonthInput(endInput && endInput.value);
+
+    if (!startYM || !endYM) {
+      setAggregateResult(resultEl, "❌ 请填写完整的月份范围");
+      return;
+    }
+    if (compareYM(startYM, endYM) > 0) {
+      setAggregateResult(resultEl, `❌ 开始月份 (${formatYM(startYM)}) 晚于结束月份 (${formatYM(endYM)})`);
       return;
     }
 
-    // 记下起始年月, 抓完要跳回去
-    const startYM = getCurrentPageYearMonth();
+    const total = monthsBetweenInclusive(startYM, endYM);
+    const endStr = formatYM(endYM);
 
     btn.disabled = true;
     const oldText = btn.textContent;
     btn.textContent = "⏳ 抓取中...";
 
-    const setProgress = (html) => {
-      resultEl.innerHTML = html;
-      // 同步缓存, render() 触发时不会被冲掉
-      aggregateCache = html;
-    };
-    setProgress(`⏳ 抓取中... (0/${months})`);
+    const setProgress = (html) => setAggregateResult(resultEl, html);
+    setProgress(`⏳ 准备翻到结束月 ${endStr}...`);
 
     try {
-      const monthly = await fetchHistoricalMonths(months, (cur, total, ym) => {
-        setProgress(`⏳ 抓取中... (${cur}/${total}) · ${ym.year}-${String(ym.month).padStart(2, "0")}`);
+      // 先翻到结束月 (确保 fetch 起点对)
+      const navOk = await navigateToMonth(endYM);
+      if (!navOk) {
+        setProgress(`❌ 翻到 ${endStr} 失败, 中止`);
+        btn.disabled = false;
+        btn.textContent = oldText;
+        return;
+      }
+
+      const monthly = await fetchHistoricalMonths(startYM, endYM, (cur, total2, ym) => {
+        setProgress(`⏳ 抓取中... (${cur}/${total2}) · ${formatYM(ym)}`);
       });
       if (monthly.length === 0) {
-        setProgress(`❌ 没找到 Prev 按钮或 Year/Month input, 无法翻月 (面板会回到当月)`);
+        setProgress(`❌ 没找到 Prev 按钮, 无法翻月`);
         btn.disabled = false;
         btn.textContent = oldText;
         return;
       }
       const agg = computeAggregate(monthly);
-      const thisMonth = monthly[0];
-      const diffMin = thisMonth.totalMin - agg.avgMin;
+      // monthly[0] = startYM (最早), monthly[last] = endYM (最近)
+      const lastMonth = monthly[monthly.length - 1];
+      const diffMin = lastMonth.totalMin - agg.avgMin;
       const diffCls = diffMin >= 0 ? "ot-good" : "ot-warn";
       const diffSign = diffMin >= 0 ? "+" : "";
       const trend = diffMin >= 0 ? "📈" : "📉";
 
-      // 月度明细 (倒序, 最新在最上面)
+      // 月度明细 (倒序, 最近在上)
       let monthlyHtml = `<div class="ot-monthly-list">`;
       for (let i = monthly.length - 1; i >= 0; i--) {
         const m = monthly[i];
-        monthlyHtml += `<div class="ot-monthly-row"><span>${m.year}-${String(m.month).padStart(2, "0")}</span><span>${hoursToStr(m.totalHours)}</span><span>${m.overtimeDays}天</span><span>🚕×${m.totalSubsidyCount}</span></div>`;
+        monthlyHtml += `<div class="ot-monthly-row"><span>${formatYM(m)}</span><span>${hoursToStr(m.totalHours)}</span><span>${m.overtimeDays}天</span><span>🚕×${m.totalSubsidyCount}</span></div>`;
       }
       monthlyHtml += `</div>`;
 
+      const rangeDesc = startYM.year === endYM.year && startYM.month === endYM.month
+        ? `${formatYM(endYM)} (本月)`
+        : `${formatYM(startYM)} ~ ${formatYM(endYM)} (${total} 月)`;
+
       setProgress(`
         <div class="ot-aggregate-stats">
-          <div class="ot-row"><span class="ot-label">📊 近 ${agg.monthCount} 月累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
+          <div class="ot-row"><span class="ot-label">📊 ${rangeDesc} 累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
           <div class="ot-row"><span class="ot-label">📊 月均加班</span><span class="ot-value">${hoursToStr(agg.avgHours)}</span></div>
-          <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 本月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
+          <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 末月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
           ${monthlyHtml}
+          <div style="margin-top:6px;font-size:11px;color:#6b7280">📍 已停在结束月 ${endStr}</div>
         </div>
       `);
 
-      // 翻月回到起始月 (注意: 此时页面已在历史月份上, 需要用 Next 反向回来)
-      if (startYM) {
-        setProgress(aggregateCache + `<div style="margin-top:4px;color:#9ca3af">⏳ 翻回当月 ${startYM.year}-${String(startYM.month).padStart(2, "0")}...</div>`);
-        const ok = await navigateToMonth(startYM);
-        if (ok) {
-          setProgress(aggregateCache.replace(/<div style="margin-top:4px;color:#9ca3af">.*?<\/div>/s, ""));
-          render();  // 用当月数据重新渲染主面板
-        } else {
-          setProgress(aggregateCache.replace(/<div style="margin-top:4px;color:#9ca3af">.*?<\/div>/s, "")
-            + `<div style="margin-top:4px;color:#dc2626">⚠️ 翻回当月失败, 请手动点 "Today" 回到当月</div>`);
-        }
-      }
+      // 当前已在 endYM (刚才翻过去的), render 主面板用 endYM 的数据
+      render();
       btn.disabled = false;
-      btn.textContent = "🔄 重新加载";
+      btn.textContent = "🔄 重新统计";
     } catch (e) {
       console.error("[OT] aggregate error:", e);
       setProgress(`❌ 出错: ${e.message || e}`);
       btn.disabled = false;
       btn.textContent = oldText;
     }
+  }
+
+  // 写结果 + 同步缓存 (render 触发时不会被冲掉)
+  function setAggregateResult(resultEl, html) {
+    resultEl.innerHTML = html;
+    aggregateCache = html;
+  }
+
+  // 预设按钮: 本月 / 近3月 / 近6月 / 近12月 → 设置 start/end 输入
+  function applyAggregatePreset(preset, startInput, endInput) {
+    const endYM = getCurrentMonthYM();
+    let startYM;
+    if (preset === "this") {
+      startYM = endYM;
+    } else {
+      const n = parseInt(preset, 10);
+      if (!n || n < 1) return;
+      startYM = addMonths(endYM, -(n - 1));
+    }
+    startInput.value = formatYM(startYM);
+    endInput.value = formatYM(endYM);
   }
 
   // ============ 打卡提醒 ============
@@ -792,6 +911,17 @@
     // 原因: aggregate 按钮在 body.innerHTML 里, render() 会重建它
     //       直接挂监听会丢, 委托到 panel 上就没这个问题
     panel.addEventListener("click", (e) => {
+      // 预设按钮 (data-preset 在 button 上, 不在 data-action 上)
+      const presetBtn = e.target.closest("[data-preset]");
+      if (presetBtn && panel.contains(presetBtn)) {
+        const startInput = panel.querySelector("[data-aggregate-start]");
+        const endInput = panel.querySelector("[data-aggregate-end]");
+        if (startInput && endInput) {
+          applyAggregatePreset(presetBtn.dataset.preset, startInput, endInput);
+        }
+        return;
+      }
+
       const target = e.target.closest("[data-action]");
       if (!target || !panel.contains(target)) return;
       const action = target.dataset.action;
@@ -809,22 +939,6 @@
         target.textContent = showing ? "▾" : "▴";
       } else if (action === "aggregate") {
         handleAggregateClick(target);
-      }
-    });
-
-    // select 改月数时实时保存
-    panel.addEventListener("change", (e) => {
-      if (e.target.matches("[data-aggregate-months]")) {
-        const n = parseInt(e.target.value, 10);
-        if (!isNaN(n) && n >= 1 && n <= 12) {
-          RULES = { ...RULES, aggregateMonths: n };
-          try {
-            chrome.storage.sync.set({ aggregateMonths: n });
-          } catch (_) {}
-          // 顺手更新按钮文案
-          const btn = panel.querySelector("[data-action=\"aggregate\"]");
-          if (btn) btn.textContent = `📊 加载近 ${n} 月统计`;
-        }
       }
     });
     // aggregate 按钮的点击处理委托到 panel 上 (见 ensurePanel 里的 panel.addEventListener)
@@ -939,14 +1053,18 @@
         } · 阈值 ${RULES.thresholdHours}h · 目标 ${RULES.targetHours}h${totalSubsidyCount > 0 ? ` · 补贴≥${RULES.subsidyStartTime}` : ""}</span>
       </div>
       <div class="ot-aggregate">
-        <div class="ot-aggregate-controls">
-          <select data-aggregate-months>
-            <option value="1"${RULES.aggregateMonths === 1 ? " selected" : ""}>本月</option>
-            <option value="3"${RULES.aggregateMonths === 3 ? " selected" : ""}>近 3 月</option>
-            <option value="6"${RULES.aggregateMonths === 6 ? " selected" : ""}>近 6 月</option>
-            <option value="12"${RULES.aggregateMonths === 12 ? " selected" : ""}>近 12 月</option>
-          </select>
-          <button class="ot-btn-secondary" data-action="aggregate">📊 加载</button>
+        <div class="ot-aggregate-presets">
+          <button class="ot-btn-tiny" data-preset="this">本月</button>
+          <button class="ot-btn-tiny" data-preset="3">近3月</button>
+          <button class="ot-btn-tiny" data-preset="6">近6月</button>
+          <button class="ot-btn-tiny" data-preset="12">近12月</button>
+        </div>
+        <div class="ot-aggregate-range">
+          <span class="ot-range-label">从</span>
+          <input type="month" data-aggregate-start value="${formatYM(addMonths(getCurrentMonthYM(), -2))}">
+          <span class="ot-range-label">到</span>
+          <input type="month" data-aggregate-end value="${formatYM(getCurrentMonthYM())}">
+          <button class="ot-btn-secondary" data-action="aggregate">📊 统计</button>
         </div>
         <div class="ot-aggregate-result" data-result></div>
       </div>
