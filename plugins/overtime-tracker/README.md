@@ -1,4 +1,4 @@
-# 加班工时实时统计 v2.3.2 - Chrome 扩展
+# 加班工时实时统计 v2.3.3 - Chrome 扩展
 
 ## 安装
 1. `chrome://extensions/` 打开开发者模式
@@ -50,6 +50,7 @@
 - 🏷️ 右上角 OT 红标(诊断标记, 点开显示版本号)
 
 ## 版本历史
+- **v2.3.3** (2026-07-02): 修 oa.aciic.cn Prev 按钮 text "< Prev" 没匹配上(加 exact 模式 + 部分 regex 加 `<`/`>`) + 翻月加安全检查(差值 > 24 中止 + 点击后年月未变重试一次)
 - **v2.3.2** (2026-07-02): 修多月统计的 3 个 bug——(1) 抓取结果被 render() 覆盖 (加 aggregateCache 缓存) (2) 抓完不跳回当月 (加 navigateToMonth 反向翻月) (3) oa.aciic.cn 上 Prev 按钮找不到 (findNavButton 加更多匹配模式: Prev/上月/Previous 等)
 - **v2.3.1** (2026-07-02): 修 aggregate 按钮点击无反应——之前用 querySelector 直接挂监听, 但按钮在 body.innerHTML 里每次 render() 重建, 监听丢了; 改成事件委托. 同时把月份选择移到悬浮面板(select: 本月/3/6/12), 实时持久化到 chrome.storage.sync
 - **v2.3.0** (2026-07-02): 多月统计——可指定统计月数(默认 12=近一年), 点 panel 按钮自动翻月份抓数据, 显示累计/月均/本月对比/每月明细

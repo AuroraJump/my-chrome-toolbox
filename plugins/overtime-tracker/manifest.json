@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "加班工时实时统计",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "在 hygon 考勤系统上按自定义规则实时统计加班工时",
   "icons": {
     "128": "icons/icon-128.png"

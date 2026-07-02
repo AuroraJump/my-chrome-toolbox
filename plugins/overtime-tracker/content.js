@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.3.2";
+  const VERSION = "2.3.3";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -466,16 +466,18 @@
       'button, a, input[type="button"], input[type="submit"]'
     );
     const exactPatterns = direction === "prev"
-      ? ["<", "Prev", "<< Prev", "<<", "上月", "< 上月", "Previous", "上个月", "Previous Month"]
-      : [">", "Next", "Next >>", ">>", "下月", "Next>", "下个月", "Next Month"];
+      ? ["<", "Prev", "<< Prev", "<<", "上月", "< 上月", "Previous", "上个月", "Previous Month",
+         "<Prev", "< Prev", "< previous", "<Previous"]
+      : [">", "Next", "Next >>", ">>", "下月", "Next>", "下个月", "Next Month",
+         "Next>", "Next >", ">Next", "Next >"];
     for (const el of candidates) {
       const text = (el.textContent || el.value || "").trim();
       if (exactPatterns.includes(text)) return el;
     }
-    // 部分匹配兜底 (regex)
+    // 部分匹配兜底: 也加上 < 和 > 字符匹配 (oa.aciic.cn 上 "< Prev" 这种)
     const partialRegex = direction === "prev"
-      ? /^(Prev|prev|Previous|previous|上月|上个月)/
-      : /^(Next|next|下月|下个月)/;
+      ? /^(<|Prev|prev|Previous|previous|上月|上个月)/
+      : /^(>|Next|next|下月|下个月)/;
     for (const el of candidates) {
       const text = (el.textContent || el.value || "").trim();
       if (partialRegex.test(text)) return el;
@@ -500,6 +502,12 @@
     let diff = currentIdx - targetIdx;
     if (diff === 0) return true;
 
+    // 安全检查: 差值过大就中止, 防止点击命中错按钮导致跑飞
+    if (Math.abs(diff) > 24) {
+      console.warn(`[OT] 翻月差值过大 (${diff} 月), 中止. 当前: ${currentYM.year}-${currentYM.month}, 目标: ${targetYM.year}-${targetYM.month}`);
+      return false;
+    }
+
     const direction = diff > 0 ? "next" : "prev";
     const clicks = Math.abs(diff);
     console.log(`[OT] 翻月回去: ${clicks} 次 ${direction} (${currentYM.year}-${currentYM.month} → ${targetYM.year}-${targetYM.month})`);
@@ -507,11 +515,31 @@
     for (let i = 0; i < clicks; i++) {
       const btn = direction === "next" ? findNextMonthButton() : findPrevMonthButton();
       if (!btn) {
-        console.warn(`[OT] 找不到 ${direction} 按钮, 中断翻月`);
+        console.warn(`[OT] 找不到 ${direction} 按钮, 中断翻月 (${i + 1}/${clicks})`);
         return false;
       }
+      const beforeYM = getCurrentPageYearMonth();
       btn.click();
       await waitForCalendarUpdate();
+      const afterYM = getCurrentPageYearMonth();
+      // 检查点击是否生效: 年月没变就重试一次
+      if (!afterYM || (afterYM.year === beforeYM.year && afterYM.month === beforeYM.month)) {
+        console.warn(`[OT] ${direction} 点击后年月没变, 重试一次 (${i + 1}/${clicks})`);
+        // 重试前先尝试找别的按钮
+        const retryBtn = direction === "next" ? findNextMonthButton() : findPrevMonthButton();
+        if (retryBtn) {
+          retryBtn.click();
+          await waitForCalendarUpdate();
+        } else {
+          return false;
+        }
+      }
+      // 再次检查, 如果还不对就 abort
+      const finalYM = getCurrentPageYearMonth();
+      if (!finalYM || (finalYM.year === beforeYM.year && finalYM.month === beforeYM.month)) {
+        console.warn(`[OT] ${direction} 点击重试仍无效, 中止 (${i + 1}/${clicks})`);
+        return false;
+      }
     }
     return true;
   }
