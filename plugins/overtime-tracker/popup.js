@@ -3,7 +3,7 @@ const FIELDS = [
   "scheduleMode", "workStartTime", "workEndTime", "baseHours",
   "thresholdHours", "subsidyStartTime",
   "weekendThreshold", "weekendMax",
-  "targetHours", "ruleMode",
+  "targetHours", "aggregateMonths", "ruleMode",
 ];
 const DEFAULTS = {
   scheduleMode: "elastic",
@@ -15,6 +15,7 @@ const DEFAULTS = {
   weekendThreshold: 4,
   weekendMax: 8,
   targetHours: 48,
+  aggregateMonths: 12,
   ruleMode: "user",
 };
 
@@ -75,7 +76,7 @@ document.getElementById("save").addEventListener("click", () => {
   }
 
   // 数字字段校验
-  for (const k of ["baseHours", "thresholdHours", "weekendThreshold", "weekendMax", "targetHours"]) {
+  for (const k of ["baseHours", "thresholdHours", "weekendThreshold", "weekendMax", "targetHours", "aggregateMonths"]) {
     if (isNaN(values[k]) || values[k] < 0) {
       status.className = "error";
       status.textContent = `❌ ${k} 必须是 ≥0 的数字`;

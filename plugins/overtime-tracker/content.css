@@ -53,6 +53,60 @@
 .ot-row:last-child { border-bottom: none; }
 .ot-row-meta { border: none; padding-top: 2px; padding-bottom: 2px; }
 .ot-row.ot-rule-hint { font-size: 11px; color: #6b7280; border: none; padding-top: 6px; }
+
+.ot-aggregate {
+  padding: 8px 0 4px;
+  border-top: 1px dashed #e5e7eb;
+  margin-top: 6px;
+}
+.ot-btn-secondary {
+  width: 100%;
+  padding: 6px 8px;
+  background: #eff6ff;
+  border: 1px solid #3b82f6;
+  color: #1e40af;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.ot-btn-secondary:hover:not(:disabled) {
+  background: #dbeafe;
+}
+.ot-btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ot-aggregate-result {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.ot-aggregate-stats {
+  margin-top: 4px;
+}
+.ot-aggregate-stats .ot-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px dotted #f3f4f6;
+}
+.ot-aggregate-stats .ot-row.ot-good .ot-value { color: #059669; }
+.ot-aggregate-stats .ot-row.ot-warn .ot-value { color: #d97706; }
+.ot-monthly-list {
+  margin-top: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+.ot-monthly-row {
+  display: grid;
+  grid-template-columns: 70px 70px 50px 60px;
+  gap: 4px;
+  padding: 2px 0;
+  border-bottom: 1px dotted #f3f4f6;
+  font-variant-numeric: tabular-nums;
+}
 .ot-label { color: #6b7280; font-size: 12px; }
 .ot-value { font-weight: 600; color: #1f2937; font-variant-numeric: tabular-nums; }
 .ot-value.highlight { color: #dc2626; font-size: 16px; }

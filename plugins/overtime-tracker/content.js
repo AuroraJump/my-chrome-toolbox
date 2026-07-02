@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.2.5";
+  const VERSION = "2.3.0";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -75,6 +75,9 @@
 
     // 交通补贴(仅固定模式工作日)
     subsidyStartTime: "21:00",  // 超过这个时间的部分算补贴时段
+
+    // 多月统计
+    aggregateMonths: 12,  // 默认近一年
   };
 
   // 计算某天的"标准下班时间"(分钟)
@@ -441,6 +444,123 @@
     return isNaN(n) ? 0 : n;
   }
 
+  // ============ 多月统计 ============
+  // 通过点 Prev 按钮 + DOM 监听, 翻历史月份拿数据
+  function getCurrentPageYearMonth() {
+    const yEl = document.getElementById("Year");
+    const mEl = document.getElementById("Month");
+    if (!yEl || !mEl) return null;
+    return {
+      year: parseInt(yEl.value, 10),
+      month: parseInt(mEl.value, 10),
+    };
+  }
+
+  function findPrevMonthButton() {
+    // 常见模式: button/a/input 的 text 是 "<" / "Prev" / "<< Prev"
+    const candidates = document.querySelectorAll(
+      'button, a, input[type="button"], input[type="submit"]'
+    );
+    for (const el of candidates) {
+      const text = (el.textContent || el.value || "").trim();
+      if (text === "<" || text === "Prev" || text === "<< Prev" || text === "<<") {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  // 等待日历 DOM 更新 (MutationObserver) 或兜底 2s 超时
+  function waitForCalendarUpdate() {
+    return new Promise((resolve) => {
+      const target = document.getElementById("calendar");
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        observer && observer.disconnect();
+        resolve();
+      };
+      let observer = null;
+      if (target) {
+        observer = new MutationObserver(() => {
+          // 等一会儿确认渲染完成
+          setTimeout(finish, 200);
+        });
+        observer.observe(target, { childList: true, subtree: true });
+      }
+      setTimeout(finish, 2000);  // 兜底
+    });
+  }
+
+  // 抓取近 N 个月的数据 (含本月)
+  // 返回 [{ year, month, days, ot }, ...]
+  async function fetchHistoricalMonths(count, onProgress) {
+    const result = [];
+    // 当前页 = 第 1 个月
+    let ym = getCurrentPageYearMonth();
+    if (!ym) {
+      console.warn("[OT] 找不到 Year/Month input, 无法抓历史");
+      return result;
+    }
+
+    for (let i = 0; i < count; i++) {
+      // 读当前页面数据
+      const days = readDailyPunches();
+      const r = computeUserRule(days, RULES);
+      result.push({
+        year: ym.year,
+        month: ym.month,
+        days,
+        totalMin: r.totalMin,
+        totalHours: r.totalHours,
+        overtimeDays: r.overtimeDays,
+        totalSubsidyCount: r.totalSubsidyCount,
+      });
+      onProgress && onProgress(i + 1, count, ym);
+
+      // 还有下个月要翻
+      if (i < count - 1) {
+        const prevBtn = findPrevMonthButton();
+        if (!prevBtn) {
+          console.warn("[OT] 找不到 Prev 按钮, 中断抓取");
+          break;
+        }
+        prevBtn.click();
+        await waitForCalendarUpdate();
+        ym = getCurrentPageYearMonth();
+        if (!ym) break;
+      }
+    }
+    return result;
+  }
+
+  function computeAggregate(monthlyData) {
+    const monthCount = monthlyData.length;
+    let totalMin = 0, totalSubsidyCount = 0, totalOvertimeDays = 0;
+    const perMonth = [];
+    for (const m of monthlyData) {
+      totalMin += m.totalMin;
+      totalSubsidyCount += m.totalSubsidyCount;
+      totalOvertimeDays += m.overtimeDays;
+      perMonth.push({
+        year: m.year, month: m.month,
+        totalMin: m.totalMin, totalHours: m.totalHours,
+        overtimeDays: m.overtimeDays,
+        totalSubsidyCount: m.totalSubsidyCount,
+      });
+    }
+    return {
+      monthCount,
+      totalMin, totalHours: totalMin / 60,
+      avgMin: monthCount > 0 ? totalMin / monthCount : 0,
+      avgHours: monthCount > 0 ? (totalMin / monthCount) / 60 : 0,
+      totalSubsidyCount,
+      totalOvertimeDays,
+      perMonth,
+    };
+  }
+
   // ============ 打卡提醒 ============
   // 检测今天:有上班打卡 + 没下班打卡 → 该提醒了
   function buildReminder(days, rules) {
@@ -522,6 +642,52 @@
       d.style.display = showing ? "none" : "block";
       panel.querySelector('[data-action="expand"]').textContent = showing ? "▾" : "▴";
     });
+    const aggBtn = panel.querySelector('[data-action="aggregate"]');
+    if (aggBtn) {
+      aggBtn.addEventListener("click", async () => {
+        const resultEl = panel.querySelector("[data-result]");
+        aggBtn.disabled = true;
+        resultEl.innerHTML = `⏳ 抓取中... (0/${RULES.aggregateMonths})`;
+        try {
+          const monthly = await fetchHistoricalMonths(RULES.aggregateMonths, (cur, total, ym) => {
+            resultEl.innerHTML = `⏳ 抓取中... (${cur}/${total}) · ${ym.year}-${String(ym.month).padStart(2, "0")}`;
+          });
+          if (monthly.length === 0) {
+            resultEl.innerHTML = `❌ 没找到 Prev 按钮或 Year/Month input, 无法翻月`;
+            aggBtn.disabled = false;
+            return;
+          }
+          const agg = computeAggregate(monthly);
+          // 跟本月对比
+          const thisMonth = monthly[0];
+          const diffMin = thisMonth.totalMin - agg.avgMin;
+          const diffCls = diffMin >= 0 ? "ot-good" : "ot-warn";
+          const diffSign = diffMin >= 0 ? "+" : "";
+          const trend = diffMin >= 0 ? "📈" : "📉";
+          // 月度明细 (倒序)
+          let monthlyHtml = `<div class="ot-monthly-list">`;
+          for (let i = monthly.length - 1; i >= 0; i--) {
+            const m = monthly[i];
+            monthlyHtml += `<div class="ot-monthly-row"><span>${m.year}-${String(m.month).padStart(2, "0")}</span><span>${hoursToStr(m.totalHours)}</span><span>${m.overtimeDays}天</span><span>🚕×${m.totalSubsidyCount}</span></div>`;
+          }
+          monthlyHtml += `</div>`;
+          resultEl.innerHTML = `
+            <div class="ot-aggregate-stats">
+              <div class="ot-row"><span class="ot-label">📊 近 ${agg.monthCount} 月累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
+              <div class="ot-row"><span class="ot-label">📊 月均加班</span><span class="ot-value">${hoursToStr(agg.avgHours)}</span></div>
+              <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 本月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
+              ${monthlyHtml}
+            </div>
+          `;
+          aggBtn.disabled = false;
+          aggBtn.textContent = "🔄 重新加载";
+        } catch (e) {
+          console.error("[OT] aggregate error:", e);
+          resultEl.innerHTML = `❌ 出错: ${e.message || e}`;
+          aggBtn.disabled = false;
+        }
+      });
+    }
 
     makeDraggable(panel);
     return panel;
@@ -631,6 +797,12 @@
             ? `固定 ${RULES.workStartTime}-${RULES.workEndTime}`
             : `弹性 ${RULES.baseHours}h`
         } · 阈值 ${RULES.thresholdHours}h · 目标 ${RULES.targetHours}h${totalSubsidyCount > 0 ? ` · 补贴≥${RULES.subsidyStartTime}` : ""}</span>
+      </div>
+      <div class="ot-aggregate" id="ot-aggregate">
+        <button class="ot-btn-secondary" data-action="aggregate">
+          📊 加载近 ${RULES.aggregateMonths} 月统计
+        </button>
+        <div class="ot-aggregate-result" data-result></div>
       </div>
     `;
 
