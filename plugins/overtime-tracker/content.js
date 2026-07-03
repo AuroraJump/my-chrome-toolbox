@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.4.5";
+  const VERSION = "2.4.6";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -70,7 +70,7 @@
     ruleMode: "user",  // "user" = 按你的规则算 | "raw" = 信任页面字段
 
     // 周末/节假日规则(只算时间, 不分弹性)
-    weekendThreshold: 4,  // 超过 4h 才算加班
+    weekendThreshold: 4,  // 满 4h 才算加班
     weekendMax: 8,        // 一天最多算 8h
 
     // 交通补贴(仅固定模式工作日)
@@ -339,11 +339,11 @@
   // 按用户规则计算
   // 日类型分三种:
   //   1) 工作日(weekday): 走 scheduleMode (弹性/固定)
-  //   2) 周末(weekend): 不分弹性, workDuration > 周末阈值 才算, 封顶 weekendMax
+  //   2) 周末(weekend): 不分弹性, workDuration >= 周末阈值 才算, 封顶 weekendMax
   //   3) 节假日(holiday): 同周末规则
   // 交通补贴规则:
   //   工作日: eMin >= subsidyStartTime (默认 21:00) → 1 次
-  //   周末/节假日: workMin > 4h → 1 次, workMin > 9h → 2 次
+  //   周末/节假日: workMin >= 4h → 1 次/天
   function computeUserRule(days, rules) {
     const thresholdMin = rules.thresholdHours * 60;
     const baseMin = rules.baseHours * 60;
@@ -388,8 +388,8 @@
       let overtimeMin = 0, delayMin = 0, reason = "";
 
       if (isWeekendOrHoliday) {
-        // 周末/节假日: 超过 weekendThreshold 算, 封顶 weekendMax
-        if (workMin > weekendThresholdMin) {
+        // 周末/节假日: 达到 weekendThreshold 才算, 封顶 weekendMax
+        if (workMin >= weekendThresholdMin) {
           overtimeMin = Math.min(workMin, weekendMaxMin);
           delayMin = overtimeMin;
           reason = overtimeMin >= weekendMaxMin
@@ -415,11 +415,10 @@
 
       // 交通补贴次数:
       //   工作日: eMin >= subsidyStartTime → 1 次
-      //   周末/节假日: workMin > 9h → 2 次, workMin > 4h → 1 次
+      //   周末/节假日: 达到起步阈值后最多 1 次/天
       let subsidyCount = 0;
       if (isWeekendOrHoliday) {
-        if (workMin > 9 * 60) subsidyCount = 2;
-        else if (workMin > weekendThresholdMin) subsidyCount = 1;
+        if (workMin >= weekendThresholdMin) subsidyCount = 1;
       } else {
         if (subsidyStartMin != null && eMin >= subsidyStartMin) subsidyCount = 1;
       }
