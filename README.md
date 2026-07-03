@@ -22,7 +22,7 @@ my-chrome-toolbox/
 
 | 插件 | 说明 | 版本 |
 |------|------|------|
-| [overtime-tracker](./plugins/overtime-tracker/) | 加班工时实时统计，支持固定/弹性排班、周末节假日规则、交通补贴按天统计、多月统计 | v2.3.5 |
+| [overtime-tracker](./plugins/overtime-tracker/) | 加班工时实时统计，支持固定/弹性排班、周末节假日规则、交通补贴按天统计、多月统计 | v2.4.5 |
 
 ## 怎么加载插件
 

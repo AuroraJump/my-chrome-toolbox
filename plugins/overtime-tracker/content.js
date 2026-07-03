@@ -16,7 +16,7 @@
   "use strict";
 
   // 版本号 (跟 manifest.json 同步, 改的时候两边一起改)
-  const VERSION = "2.3.5";
+  const VERSION = "2.4.5";
 
   // ===== URL 白名单:只在指定考勤页面运行 =====
   // 加了 <all_urls> 后 content.js 会注入到所有页面
@@ -91,6 +91,22 @@
 
   // 多月统计的渲染缓存, 防止 render() 把抓取中/抓取结果给冲掉
   let aggregateCache = "";
+  let panelMode = readPanelState("mode", "compact"); // compact | full
+  let panelDocked = readPanelState("docked", "0") === "1";
+
+  function readPanelState(key, fallback) {
+    try {
+      return localStorage.getItem(`__ot_${key}`) || fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function writePanelState(key, value) {
+    try {
+      localStorage.setItem(`__ot_${key}`, String(value));
+    } catch (_) {}
+  }
 
   // 从 chrome.storage 加载规则
   function loadRules() {
@@ -599,9 +615,9 @@
       return false;
     }
 
-    const direction = diff > 0 ? "next" : "prev";
+    const direction = diff > 0 ? "prev" : "next";
     const clicks = Math.abs(diff);
-    console.log(`[OT] 翻月回去: ${clicks} 次 ${direction} (${currentYM.year}-${currentYM.month} → ${targetYM.year}-${targetYM.month})`);
+    console.log(`[OT] 翻月: ${clicks} 次 ${direction} (${currentYM.year}-${currentYM.month} → ${targetYM.year}-${targetYM.month})`);
 
     for (let i = 0; i < clicks; i++) {
       const btn = direction === "next" ? findNextMonthButton() : findPrevMonthButton();
@@ -696,7 +712,7 @@
         ym = prevYM(ym);
       }
     }
-    return result;
+    return result.reverse();
   }
 
   function computeAggregate(monthlyData) {
@@ -723,6 +739,11 @@
       totalOvertimeDays,
       perMonth,
     };
+  }
+
+  function findExtremeMonth(perMonth, compareFn) {
+    if (!perMonth.length) return null;
+    return perMonth.reduce((best, item) => compareFn(item.totalMin, best.totalMin) ? item : best);
   }
 
   // 多月统计点击处理 (从 panel 事件委托里调用)
@@ -779,13 +800,17 @@
       const agg = computeAggregate(monthly);
       // monthly[0] = startYM (最早), monthly[last] = endYM (最近)
       const lastMonth = monthly[monthly.length - 1];
+      const maxMonth = findExtremeMonth(agg.perMonth, (a, b) => a > b);
+      const minMonth = findExtremeMonth(agg.perMonth, (a, b) => a < b);
       const diffMin = lastMonth.totalMin - agg.avgMin;
       const diffCls = diffMin >= 0 ? "ot-good" : "ot-warn";
       const diffSign = diffMin >= 0 ? "+" : "";
       const trend = diffMin >= 0 ? "📈" : "📉";
 
       // 月度明细 (倒序, 最近在上)
-      let monthlyHtml = `<div class="ot-monthly-list">`;
+      let monthlyHtml = `
+        <div class="ot-monthly-list">
+          <div class="ot-monthly-row ot-monthly-head"><span>月份</span><span>加班</span><span>天数</span><span>补贴</span></div>`;
       for (let i = monthly.length - 1; i >= 0; i--) {
         const m = monthly[i];
         monthlyHtml += `<div class="ot-monthly-row"><span>${formatYM(m)}</span><span>${hoursToStr(m.totalHours)}</span><span>${m.overtimeDays}天</span><span>🚕×${m.totalSubsidyCount}</span></div>`;
@@ -798,15 +823,33 @@
 
       setProgress(`
         <div class="ot-aggregate-stats">
-          <div class="ot-row"><span class="ot-label">📊 ${rangeDesc} 累计</span><span class="ot-value">${hoursToStr(agg.totalHours)}</span></div>
-          <div class="ot-row"><span class="ot-label">📊 月均加班</span><span class="ot-value">${hoursToStr(agg.avgHours)}</span></div>
-          <div class="ot-row ${diffCls}"><span class="ot-label">${trend} 末月 vs 月均</span><span class="ot-value">${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</span></div>
+          <div class="ot-report-grid">
+            <div><b>${hoursToStr(agg.totalHours)}</b><span>累计</span></div>
+            <div><b>${hoursToStr(agg.avgHours)}</b><span>月均</span></div>
+            <div><b>${agg.totalOvertimeDays}天</b><span>加班天数</span></div>
+            <div><b>🚕×${agg.totalSubsidyCount}</b><span>补贴</span></div>
+          </div>
+          <div class="ot-summary-list">
+            <div class="ot-summary-row"><span>${rangeDesc}</span><b>${hoursToStr(agg.totalHours)}</b></div>
+            <div class="ot-summary-row"><span>月均加班</span><b>${hoursToStr(agg.avgHours)}</b></div>
+            <div class="ot-summary-row ${diffCls}"><span>${trend} 末月 vs 月均</span><b>${diffSign}${hoursToStr(Math.abs(diffMin) / 60)}</b></div>
+            ${maxMonth ? `<div class="ot-summary-row"><span>最高月份</span><b>${formatYM(maxMonth)} · ${hoursToStr(maxMonth.totalHours)}</b></div>` : ""}
+            ${minMonth ? `<div class="ot-summary-row"><span>最低月份</span><b>${formatYM(minMonth)} · ${hoursToStr(minMonth.totalHours)}</b></div>` : ""}
+          </div>
           ${monthlyHtml}
-          <div style="margin-top:6px;font-size:11px;color:#6b7280">📍 已停在结束月 ${endStr}</div>
+          <div class="ot-aggregate-note">📍 已停在结束月 ${endStr}</div>
         </div>
       `);
 
-      // 当前已在 endYM (刚才翻过去的), render 主面板用 endYM 的数据
+      // fetchHistoricalMonths 会从 endYM 一路点 Prev 到 startYM; 统计完成后回到 endYM。
+      const backOk = await navigateToMonth(endYM);
+      if (!backOk) {
+        const currentYM = getCurrentPageYearMonth();
+        const currentStr = currentYM ? formatYM(currentYM) : "未知月份";
+        setAggregateResult(resultEl, `${aggregateCache}<div style="margin-top:6px;font-size:11px;color:#b45309">⚠️ 统计已完成, 但回到结束月 ${endStr} 失败, 当前停在 ${currentStr}</div>`);
+      }
+
+      // 当前停在 endYM, render 主面板用 endYM 的数据
       render();
       btn.disabled = false;
       btn.textContent = "🔄 重新统计";
@@ -894,11 +937,12 @@
     panel.id = "overtime-tracker-panel";
     panel.innerHTML = `
       <div class="ot-header">
-        <span class="ot-title">📊 加班工时</span>
+        <span class="ot-title" data-action="mode" title="切换迷你/完整">📊 加班工时</span>
         <div class="ot-actions">
           <button class="ot-btn" data-action="refresh" title="刷新">⟳</button>
           <button class="ot-btn" data-action="expand" title="展开明细">▾</button>
-          <button class="ot-btn" data-action="toggle" title="折叠">−</button>
+          <button class="ot-btn" data-action="dock" title="右侧停靠">↔</button>
+          <button class="ot-btn" data-action="mode" title="迷你/完整">▁</button>
         </div>
       </div>
       <div class="ot-body" data-body></div>
@@ -906,6 +950,7 @@
       <div class="ot-footer" data-footer>实时同步</div>
     `;
     document.body.appendChild(panel);
+    syncPanelChrome();
 
     // ===== 事件委托: 监听整个 panel, 根据 data-action 分发 =====
     // 原因: aggregate 按钮在 body.innerHTML 里, render() 会重建它
@@ -927,12 +972,22 @@
       const action = target.dataset.action;
       if (action === "refresh") {
         render();
-      } else if (action === "toggle") {
-        panel.classList.toggle("collapsed");
-        const detailVisible = panel.querySelector("[data-detail]").style.display !== "none";
-        target.textContent =
-          panel.classList.contains("collapsed") ? "+" : (detailVisible ? "−" : "−");
+      } else if (action === "mode") {
+        panelMode = panelMode === "compact" ? "full" : "compact";
+        writePanelState("mode", panelMode);
+        syncPanelChrome();
+        render();
+      } else if (action === "dock") {
+        panelDocked = !panelDocked;
+        writePanelState("docked", panelDocked ? "1" : "0");
+        syncPanelChrome();
       } else if (action === "expand") {
+        if (panelMode === "compact") {
+          panelMode = "full";
+          writePanelState("mode", panelMode);
+          syncPanelChrome();
+          render();
+        }
         const d = panel.querySelector("[data-detail]");
         const showing = d.style.display !== "none";
         d.style.display = showing ? "none" : "block";
@@ -945,6 +1000,22 @@
 
     makeDraggable(panel);
     return panel;
+  }
+
+  function syncPanelChrome() {
+    if (!panel) return;
+    panel.classList.toggle("compact", panelMode === "compact");
+    panel.classList.toggle("docked", panelDocked);
+    const modeBtn = panel.querySelector('[data-action="mode"].ot-btn');
+    if (modeBtn) {
+      modeBtn.textContent = panelMode === "compact" ? "⛶" : "▁";
+      modeBtn.title = panelMode === "compact" ? "展开完整面板" : "收起为迷你";
+    }
+    const dockBtn = panel.querySelector('[data-action="dock"]');
+    if (dockBtn) {
+      dockBtn.textContent = panelDocked ? "⇥" : "↔";
+      dockBtn.title = panelDocked ? "取消右侧停靠" : "右侧停靠";
+    }
   }
 
   function render() {
@@ -1018,7 +1089,25 @@
     else if (pct >= 30) { zbClass += " ok"; zbIcon = "⏳"; }
     else { zbIcon = "🌱"; }
 
-    body.innerHTML = `
+    const compactHtml = `
+      <div class="ot-compact-summary" data-action="mode" title="点击展开完整面板">
+        <div class="primary">
+          <span>本月</span>
+          <b>${hoursToStr(totalHours)}</b>
+        </div>
+        <div>
+          <span>目标</span>
+          <b>${pct.toFixed(0)}%</b>
+        </div>
+        <div>
+          <span>补贴</span>
+          <b>${totalSubsidyCount}次</b>
+        </div>
+      </div>
+      <div class="ot-compact-progress"><div style="width:${Math.min(100, pct).toFixed(1)}%"></div></div>
+    `;
+
+    const fullHtml = `
       ${buildReminder(days, RULES)}
       <div class="ot-row">
         <span class="ot-label">${zbIcon} 本月累计加班</span>
@@ -1060,15 +1149,20 @@
           <button class="ot-btn-tiny" data-preset="12">近12月</button>
         </div>
         <div class="ot-aggregate-range">
-          <span class="ot-range-label">从</span>
-          <input type="month" data-aggregate-start value="${formatYM(addMonths(getCurrentMonthYM(), -2))}">
-          <span class="ot-range-label">到</span>
-          <input type="month" data-aggregate-end value="${formatYM(getCurrentMonthYM())}">
-          <button class="ot-btn-secondary" data-action="aggregate">📊 统计</button>
+          <label class="ot-month-field">
+            <span class="ot-range-label">从</span>
+            <input type="month" data-aggregate-start value="${formatYM(addMonths(getCurrentMonthYM(), -2))}">
+          </label>
+          <label class="ot-month-field">
+            <span class="ot-range-label">到</span>
+            <input type="month" data-aggregate-end value="${formatYM(getCurrentMonthYM())}">
+          </label>
+          <button class="ot-btn-secondary" data-action="aggregate">统计</button>
         </div>
         <div class="ot-aggregate-result" data-result></div>
       </div>
     `;
+    body.innerHTML = panelMode === "compact" ? compactHtml : fullHtml;
 
     // 每日明细
     let detailHtml = `<div class="ot-detail-title">📅 每日明细</div>`;
@@ -1095,6 +1189,11 @@
       detailHtml += `<div class="ot-empty">原始模式:未计算每日明细</div>`;
     }
     detail.innerHTML = detailHtml;
+    if (panelMode === "compact") {
+      detail.style.display = "none";
+      const expandBtn = p.querySelector('[data-action="expand"]');
+      if (expandBtn) expandBtn.textContent = "▾";
+    }
 
     // v2.3.2 修复: 抓取中或抓取结果被 render() 覆盖的问题
     // 缓存 aggregate 状态, render 之后恢复
@@ -1105,6 +1204,7 @@
 
     const now = new Date();
     footer.textContent = `v${VERSION} · 更新于 ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} · ${RULES.ruleMode === "raw" ? "原始" : "自定义规则"}`;
+    syncPanelChrome();
   }
 
   // ============ 拖拽 ============
@@ -1112,7 +1212,7 @@
     const header = el.querySelector(".ot-header");
     let startX, startY, startLeft, startTop, dragging = false;
     header.addEventListener("pointerdown", e => {
-      if (e.target.closest(".ot-btn")) return;
+      if (e.target.closest("[data-action]") || panelDocked) return;
       dragging = true;
       el.classList.add("dragging");
       const rect = el.getBoundingClientRect();
